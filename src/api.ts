@@ -2,6 +2,7 @@
 import { KVS } from "./cache"
 import { AuthProvider } from "./auth"
 import { fetchWithTimeout } from "./util"
+import { CCID, CSID, FQDN, IsCCID, IsCSID } from "./model"
 
 export class ServerOfflineError extends Error {
     constructor(server: string) {
@@ -97,88 +98,15 @@ export class Api {
         this.cache.set(cacheKey, failCount + 1)
     }
 
-    async fetchWithCredentialBlob(
-        host: string,
-        path: string,
-        init: RequestInit = {},
-        timeoutms?: number
-    ): Promise<Blob> {
-
-        const fetchNetwork = async (): Promise<Blob> => {
-            const fetchHost = host || this.defaultHost
-            const url = `https://${fetchHost}${path}`
-
-            if (!(await this.isHostOnline(fetchHost))) {
-                return Promise.reject(new ServerOfflineError(fetchHost))
-            }
-
-
-            init.headers = {
-                ...init.headers,
-            }
-
-            try {
-                const authHeaders = await this.authProvider.getHeaders(fetchHost)
-                init.headers = {
-                    ...init.headers,
-                    ...authHeaders
-                }
-            } catch (e) {
-                console.error('failed to get auth headers', e)
-            }
-            
-            const req = fetchWithTimeout(url, init, timeoutms).then(async (res) => {
-
-                switch (res.status) {
-                    case 403:
-                        throw new PermissionError(`fetch failed on transport: ${res.status} ${await res.text()}`)
-                    case 404:
-                        throw new NotFoundError(`fetch failed on transport: ${res.status} ${await res.text()}`)
-                    case 502:
-                    case 503:
-                    case 504:
-                        await this.markHostOffline(fetchHost)
-                        throw new ServerOfflineError(fetchHost)
-                }
-
-                if (!res.ok) {
-                    return await Promise.reject(new Error(`fetch failed on transport: ${res.status} ${await res.text()}`))
-                }
-
-                this.markHostOnline(fetchHost)
-
-                return await res.blob()
-
-            }).catch(async (err) => {
-
-                if (err instanceof ServerOfflineError) {
-                    return Promise.reject(err)
-                }
-
-                if (['ENOTFOUND', 'ECONNREFUSED'].includes(err.cause?.code)) {
-                    await this.markHostOffline(fetchHost)
-                    return Promise.reject(new ServerOfflineError(fetchHost))
-                }
-
-                return Promise.reject(err)
-
-            })
-
-            return req
-        }
-
-        return await fetchNetwork()
-    }
-
     // Gets
     async fetchWithCredential<T>(
         host: string,
         path: string,
         init: RequestInit = {},
         timeoutms?: number
-    ): Promise<ApiResponse<T>> {
+    ): Promise<T> {
 
-        const fetchNetwork = async (): Promise<ApiResponse<T>> => {
+        const fetchNetwork = async (): Promise<T> => {
             const fetchHost = host || this.defaultHost
             const url = `https://${fetchHost}${path}`
 
@@ -251,7 +179,7 @@ export class Api {
         path: string,
         cacheKey: string,
         opts?: FetchOptions<T>
-    ): Promise<T | null> {
+    ): Promise<T> {
 
         let cached: T | null = null
         if (opts?.cache !== 'no-cache') {
@@ -326,18 +254,15 @@ export class Api {
 
                 this.markHostOnline(fetchHost)
 
-                const data: ApiResponse<T> = await res.json()
-                if (data.status != 'ok') {
-                    return await Promise.reject(new Error(`getMessage failed on application: ${data.error}`))
-                }
+                const data: T = await res.json()
                 
-                opts?.expressGetter?.(data.content)
-                if (opts?.cache !== 'negative-only') this.cache.set(cacheKey, data.content)
+                opts?.expressGetter?.(data)
+                if (opts?.cache !== 'negative-only') this.cache.set(cacheKey, data)
 
-                if (Array.isArray(data.content)) {
-                    return data.content.map((item) => Object.setPrototypeOf(item, cls.prototype))
+                if (Array.isArray(data)) {
+                    return data.map((item) => Object.setPrototypeOf(item, cls.prototype))
                 } else {
-                    return Object.setPrototypeOf(data.content, cls.prototype)
+                    return Object.setPrototypeOf(data, cls.prototype)
                 }
 
             }).catch(async (err) => {
@@ -372,6 +297,88 @@ export class Api {
         return await fetchNetwork()
     }
 
+    async getServer(remote: FQDN, opts?: FetchOptions<Server>): Promise<Server> {
+        const cacheKey = `domain:${remote}`
+        const path = '.well-known/concrnt'
+        const data = await this.fetchWithCache<Server>(Server, remote, path, cacheKey, { ...opts, auth: 'no-auth' })
+        if (!data) throw new NotFoundError(`domain ${remote} not found`)
+        return data
+    }
 
+    async getServerByCSID(csid: CSID): Promise<Server> {
+        let uri = `cc://${csid}`
+
+        const server = await this.getResource<Server>(Server, uri, this.defaultHost)
+        return server
+    }
+
+    async getEntity(ccid: string, hint?: string): Promise<Entity> {
+        let uri = `cc://${ccid}`
+
+        const entity = await this.getResource<Entity>(Entity, uri, hint ?? this.defaultHost)
+        return entity
+    }
+
+    async getResource<T>(
+        cls: new () => T extends (infer U)[] ? U : T,
+        uri: string,
+        domain?: string
+    ): Promise<T> {
+        const parsed = new URL(uri)
+        const owner = parsed.host
+        const key = parsed.pathname
+
+        let fqdn = domain
+        if (!fqdn) {
+            fqdn = owner
+            if (IsCCID(owner)) {
+                const entity = await this.getEntity(owner)
+                fqdn = entity.domain
+            }
+            if (IsCSID(owner)) {
+                const server = await this.getServerByCSID(owner)
+                fqdn = server.domain
+            }
+        }
+
+        const server = await this.getServer(fqdn)
+
+        let endpoint = server.endpoints['net.concrnt.core.resource']
+            .replaceAll('{uri}', uri)
+            .replaceAll('{owner}', owner)
+            .replaceAll('{key}', key)
+
+        const resource = this.fetchWithCache<T>(
+            cls,
+            fqdn,
+            endpoint,
+            uri,
+            {},
+        )
+
+        return resource
+   }
+
+
+}
+
+export class Server {
+    version: string = ''
+    domain: string = ''
+    csid: CSID = ''
+    layer: string = ''
+    endpoints: Record<string, string> = {}
+}
+
+export class Entity {
+    ccid: CCID = ''
+    alias?: string
+    domain: FQDN = ''
+    tag: string = ''
+
+    affiliationDocument: string = ''
+    affiliationSignature: string = ''
+
+    cdate: string = ''
 }
 
