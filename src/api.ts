@@ -299,7 +299,7 @@ export class Api {
 
     async getServer(remote: FQDN, opts?: FetchOptions<Server>): Promise<Server> {
         const cacheKey = `domain:${remote}`
-        const path = '.well-known/concrnt'
+        const path = '/.well-known/concrnt'
         const data = await this.fetchWithCache<Server>(Server, remote, path, cacheKey, { ...opts, auth: 'no-auth' })
         if (!data) throw new NotFoundError(`domain ${remote} not found`)
         return data
