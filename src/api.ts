@@ -2,7 +2,7 @@
 import { KVS } from "./cache"
 import { AuthProvider } from "./auth"
 import { fetchWithTimeout } from "./util"
-import { CCID, CSID, FQDN, IsCCID, IsCSID } from "./model"
+import { CCID, CSID, FQDN, IsCCID, IsCSID, Document } from "./model"
 
 export class ServerOfflineError extends Error {
     constructor(server: string) {
@@ -357,6 +357,38 @@ export class Api {
         )
 
         return resource
+   }
+
+   async commit<T>(document: Document<T>, domain?: string): Promise<void> {
+
+        const docString = JSON.stringify(document)
+        const signature = this.authProvider.sign(docString)
+
+        const signedDoc = {
+            document: docString,
+            proof: {
+                type: "concrnt-ecrecover-direct",
+                signature: signature
+            }
+        }
+
+        return fetch(`https://${domain ?? this.defaultHost}/commit`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(signedDoc)
+        }).then(response => {
+            if (!response.ok) {
+                throw new Error(`Server responded with ${response.status}`);
+            }
+            return response.json();
+        }).then(data => {
+            console.log("Affiliation committed successfully:", data);
+        }).catch(error => {
+            console.error("Error committing affiliation:", error);
+        });
+
    }
 
 
