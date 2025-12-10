@@ -98,8 +98,30 @@ export class Api {
         this.cache.set(cacheKey, failCount + 1)
     }
 
-    // Gets
     async fetchWithCredential<T>(
+        host: string,
+        path: string,
+        init: RequestInit = {},
+        timeoutms?: number
+    ): Promise<T> {
+
+        const fetchHost = host || this.defaultHost
+
+        try {
+            const authHeaders = await this.authProvider.getHeaders(fetchHost)
+            init.headers = {
+                ...init.headers,
+                ...authHeaders
+            }
+        } catch (e) {
+            console.error('failed to get auth headers', e)
+        }
+
+        return this.fetchHost<T>(fetchHost, path, init, timeoutms)
+    }
+
+    // Gets
+    async fetchHost<T>(
         host: string,
         path: string,
         init: RequestInit = {},
@@ -117,16 +139,6 @@ export class Api {
             init.headers = {
                 'Accept': 'application/json',
                 ...init.headers,
-            }
-
-            try {
-                const authHeaders = await this.authProvider.getHeaders(fetchHost)
-                init.headers = {
-                    ...init.headers,
-                    ...authHeaders
-                }
-            } catch (e) {
-                console.error('failed to get auth headers', e)
             }
             
             const req = fetchWithTimeout(url, init, timeoutms).then(async (res) => {
@@ -357,9 +369,22 @@ export class Api {
         )
 
         return resource
-   }
+    }
 
-   async commit<T>(document: Document<T>, domain?: string): Promise<void> {
+    async requestConcrntApi<T>(host: string, api: string, params: Record<string, string>, init?: RequestInit): Promise<T> {
+
+        const server = await this.getServer(host)
+        
+        let endpoint = server.endpoints[api]
+        for (const [key, value] of Object.entries(params)) {
+            endpoint = endpoint.replaceAll(`{${key}}`, value)
+        }
+            
+        return this.fetchHost<T>(host, endpoint, init)
+
+    }
+
+    async commit<T>(document: Document<T>, domain?: string): Promise<void> {
 
         const docString = JSON.stringify(document)
         const signature = this.authProvider.sign(docString)
@@ -388,10 +413,7 @@ export class Api {
         }).catch(error => {
             console.error("Error committing affiliation:", error);
         });
-
-   }
-
-
+    }
 }
 
 export class Server {

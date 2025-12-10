@@ -1,6 +1,6 @@
 {
-  "name": "@concrnt/client",
-  "version": "0.0.24",
+  "name": "@concrnt/clientv2",
+  "version": "0.0.0",
   "description": "",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
